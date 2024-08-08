@@ -1,19 +1,16 @@
 #! /usr/bin/env node
-import { ApiClient, BugSplatApiClient, OAuthClientCredentialsClient, SymbolFile, VersionsApiClient } from '@bugsplat/js-api-client';
+import { ApiClient, BugSplatApiClient, OAuthClientCredentialsClient, VersionsApiClient } from '@bugsplat/js-api-client';
 import commandLineArgs, { CommandLineOptions } from 'command-line-args';
 import commandLineUsage from 'command-line-usage';
-import firstline from 'firstline';
-import { createReadStream, existsSync } from 'fs';
-import { mkdir, readFile, rm, stat } from 'fs/promises';
-import glob from 'glob-promise';
-import { basename, dirname, extname, join, relative } from 'path';
-import { CommandLineDefinition, argDefinitions, maxParallelThreads, usageDefinitions } from './command-line-definitions';
-import { tryGetPdbGuid, tryGetPeGuid } from './pdb';
-import { createWorkersFromSymbolFiles } from './worker';
-import { Zip } from './zip';
-
-const currentDirectory = process ? process.cwd() : __dirname;
-const tmpDir = join(currentDirectory, 'tmp');
+import { existsSync, mkdirSync } from 'node:fs';
+import { mkdir, readFile } from 'node:fs/promises';
+import { basename, dirname, extname, join } from 'node:path';
+import { fileExists } from '../src/fs';
+import { globFiles } from '../src/glob';
+import { importNodeDumpSyms } from '../src/preload';
+import { safeRemoveTmp, tmpDir } from '../src/tmp';
+import { uploadSymbolFiles } from '../src/upload';
+import { CommandLineDefinition, argDefinitions, usageDefinitions } from './command-line-definitions';
 
 (async () => {
     let {
@@ -28,7 +25,7 @@ const tmpDir = join(currentDirectory, 'tmp');
         remove,
         files,
         directory,
-        threads
+        dumpSyms
     } = await getCommandLineOptions(argDefinitions);
 
     if (help) {
@@ -64,29 +61,24 @@ const tmpDir = join(currentDirectory, 'tmp');
         logMissingAuthAndExit();
     }
 
-    if (threads > maxParallelThreads) {
-        console.log(`Maximum number of upload threads is ${maxParallelThreads}, using ${maxParallelThreads} instead...`);
-        threads = maxParallelThreads;
-    }
-
     console.log('About to authenticate...')
 
     const bugsplat = await createBugSplatClient({
         user,
         password,
         clientId,
-        clientSecret
+        clientSecret,
     });
 
     console.log('Authentication success!');
 
-    const symbolsApiClient = new VersionsApiClient(bugsplat);
-
     if (remove) {
         try {
+            const versionsApiClient = new VersionsApiClient(bugsplat);
+
             console.log(`About to delete symbols for ${database}-${application}-${version}...`);
 
-            await symbolsApiClient.deleteSymbols(
+            await versionsApiClient.deleteSymbols(
                 database,
                 application,
                 version
@@ -102,91 +94,44 @@ const tmpDir = join(currentDirectory, 'tmp');
     }
 
     directory = normalizeDirectory(directory);
+
+    if (!existsSync(tmpDir)) {
+        await mkdir(tmpDir);
+    }
+
     const globPattern = `${directory}/${files}`;
 
-    let returnCode = 0;
-    try {
-        const symbolFilePaths = await glob(globPattern);
+    let symbolFilePaths = await globFiles(globPattern);
 
-        if (!symbolFilePaths.length) {
-            throw new Error(`Could not find any files to upload using glob ${globPattern}!`);
+    if (!symbolFilePaths.length) {
+        throw new Error(`Could not find any files to upload using glob ${globPattern}!`);
+    }
+
+    console.log(`Found files:\n ${symbolFilePaths.join('\n')}`);
+
+    if (dumpSyms) {
+        try {
+            const nodeDumpSyms = (await importNodeDumpSyms()).dumpSyms;
+            symbolFilePaths = symbolFilePaths.map(file => {
+                console.log(`Dumping syms for ${file}...`);
+                const symFile = join(tmpDir, `${getSymFileBaseName(file)}.sym`);
+                mkdirSync(dirname(symFile), { recursive: true });
+                nodeDumpSyms(file, symFile);
+                return symFile;
+            });
+        } catch (cause) {
+            throw new Error('Can\'t run dump_syms! Please ensure node-dump-syms is installed https://github.com/BugSplat-Git/node-dump-syms', { cause });
         }
-
-        console.log(`Found files:\n ${symbolFilePaths.join('\n')}`);
-        console.log(`About to upload symbols for ${database}-${application}-${version}...`);
-
-        if (!existsSync(tmpDir)) {
-            await mkdir(tmpDir);
-        }
-
-        const symbolFiles = await Promise.all(symbolFilePaths.map(async (symbolFilePath) => await createSymbolFile(directory, symbolFilePath)));
-        const workers = createWorkersFromSymbolFiles(symbolsApiClient, symbolFiles, threads);
-        const uploads = workers.map((worker) => worker.upload(database, application, version));
-        await Promise.all(uploads);
-
-        console.log('Symbols uploaded successfully!');
-    } catch (error) {
-        console.error(error);
-        returnCode = 1;
-    } finally {
-        await safeRemoveTmp();
     }
 
-    process.exit(returnCode);
-})();
-
-async function createSymbolFile(directory: string, symbolFilePath: string): Promise<SymbolFile> {
-    const zip = new Zip();
-
-    const folderPrefix = relative(directory, dirname(symbolFilePath)).replace(/\\/g, '-');
-    const fileName = folderPrefix ? [folderPrefix, basename(symbolFilePath)].join('-') : basename(symbolFilePath);
-    const timestamp = Math.round(new Date().getTime() / 1000);
-
-    const extLowerCase = extname(symbolFilePath).toLowerCase();
-    const isSymFile = extLowerCase.includes('.sym');
-    const isPdbFile = extLowerCase.includes('.pdb');
-    const isPeFile = extLowerCase.includes('.exe') || extLowerCase.includes('.dll');
-
-    let additionalParams = {};
-    let tmpZipName = join(tmpDir, `${fileName}-${timestamp}.zip`);
-    let dbgId = '';
-
-    if (isPdbFile) {
-        dbgId = await tryGetPdbGuid(symbolFilePath);
-    }
-
-    if (isPeFile) {
-        dbgId = await tryGetPeGuid(symbolFilePath);
-    }
-
-    if (isSymFile) {
-        dbgId = await getSymFileDebugId(symbolFilePath);
-    }
-
-    if (dbgId) {
-        const moduleName = basename(symbolFilePath);
-        const lastModified = timestamp;
-        tmpZipName = join(tmpDir, `${fileName}-${dbgId}-${timestamp}-bsv1.zip`);
-        additionalParams = {
-            dbgId,
-            moduleName,
-            lastModified
-        };
-    }
-
-    await zip.addEntry(symbolFilePath);
-    await zip.write(tmpZipName);
-
-    const name = basename(tmpZipName);
-    const file = createReadStream(tmpZipName);
-    const size = (await stat(tmpZipName)).size;
-    return {
-        name,
-        size,
-        file,
-        ...additionalParams
-    } as SymbolFile;
-}
+    await uploadSymbolFiles(bugsplat, database, application, version, symbolFilePaths);
+    await safeRemoveTmp();
+    process.exit(0);
+})().catch(async (error) => {
+    await safeRemoveTmp();
+    console.error(error.message);
+    process.exit(1);
+});
 
 async function createBugSplatClient({
     user,
@@ -203,22 +148,19 @@ async function createBugSplatClient({
     return OAuthClientCredentialsClient.createAuthenticatedClient(clientId, clientSecret, host);
 }
 
-async function fileExists(path: string): Promise<boolean> {
-    try {
-        return !!(await stat(path));
-    } catch {
-        return false;
-    }
-}
 
 async function getCommandLineOptions(argDefinitions: Array<CommandLineDefinition>): Promise<CommandLineOptions> {
     const options = commandLineArgs(argDefinitions);
-    let { application, version } = options;
+    let { database, application, version } = options;
     let packageJson;
 
-    if (!application || !version) {
+    if (!database || !application || !version) {
         const packageJsonPath = './package.json';
         packageJson = await fileExists(packageJsonPath) ? JSON.parse((await readFile(packageJsonPath)).toString()) : null;
+    }
+
+    if (!database && packageJson) {
+        database = packageJson.database;
     }
 
     if (!application && packageJson) {
@@ -231,21 +173,18 @@ async function getCommandLineOptions(argDefinitions: Array<CommandLineDefinition
 
     return {
         ...options,
+        database,
         application,
         version
     }
 }
 
-async function getSymFileDebugId(path: string): Promise<string> {
-    try {
-        const uuidRegex = /[0-9a-fA-F]{33}/gm
-        const firstLine = await firstline(path);
-        const matches = firstLine.match(uuidRegex);
-        return matches?.[0] ?? '';
-    } catch {
-        console.log(`Could not get debugId for ${path}, skipping...`);
-        return '';
-    }
+// The rust-minidump-stackwalker symbol lookup implementation removes some extensions from the sym file name for symbol lookups.
+// This is a bit of a mystery and is subject to change when we learn more about how it works.
+// For now, remove any non .so extension in the sym file's base name to satisfy the minidump-stackwalker symbol lookup.
+function getSymFileBaseName(file: string): string {
+    const linuxSoExtensionPattern = /\.so\.?.*$/gm;
+    return linuxSoExtensionPattern.test(file) ? basename(file) : removeExtensionRecursive(file);
 }
 
 function logHelpAndExit() {
@@ -256,24 +195,24 @@ function logHelpAndExit() {
 
 function logMissingArgAndExit(arg: string): void {
     console.log(`\nMissing argument: -${arg}\n`);
-    process.exit(1);
+    logHelpAndExit()
 }
 
 function logMissingAuthAndExit(): void {
     console.log('\nInvalid authentication arguments: please provide either a user and password, or a clientId and clientSecret\n');
-    process.exit(1);
+    logHelpAndExit()
 }
 
 function normalizeDirectory(directory: string): string {
     return directory.replace(/\\/g, '/');
 }
 
-async function safeRemoveTmp(): Promise<void> {
-    try {
-        await rm(tmpDir, { recursive: true, force: true });
-    } catch (error) {
-        console.error(`Could not delete ${tmpDir}!`, error);
-    }
+// The extname function will return .dSYM for bugsplat.app.dSYM
+// When processing, we want to our file name for bugsplat.app.dSYM to be bugsplat.sym
+// This function will remove extensions recursively until there are none left
+function removeExtensionRecursive(file: string): string {
+    const ext = extname(file);
+    return ext ? removeExtensionRecursive(basename(file, ext)) : file;
 }
 
 function validAuthenticationArguments({

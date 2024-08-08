@@ -15,11 +15,11 @@
 
 # symbol-upload
 
-This is a simple Node.js utility and set of libraries for uploading symbol files or source maps to [BugSplat](https://www.bugsplat.com). This utility is designed to be used in your build process to upload symbols to BugSplat for each production build automatically. This package can be used as a library or a command line utility.
+This repo is a simple Node.js utility, set of libraries, and GitHub action for uploading symbol files or source maps to [BugSplat](https://www.bugsplat.com). This utility is designed to be used in your build process to upload symbols to BugSplat automatically for each production build. This package can be used as a library or a command line utility.
 
 ## Action
 
-You can use the `symbol-upload` action in your [GitHub Actions](https://github.com/features/actions) workflow by modifying the following snippet.
+Use the `symbol-upload` action in your [GitHub Actions](https://github.com/features/actions) workflow by modifying the following snippet.
 
 ```yml
 - name: Symbols 📦
@@ -27,11 +27,12 @@ You can use the `symbol-upload` action in your [GitHub Actions](https://github.c
     with:
       clientId: "${{ secrets.SYMBOL_UPLOAD_CLIENT_ID }}"
       clientSecret: "${{ secrets.SYMBOL_UPLOAD_CLIENT_SECRET }}"
-      database:"${{ secrets.BUGSPLAT_DATABASE }}"
+      database: "${{ secrets.BUGSPLAT_DATABASE }}"
       application: "your-application"
       version: "your-version"
       files: "**/*.{pdb,exe,dll}"
       directory: "your-build-directory"
+      node-version: "20"
 ```
 
 Be sure to use [secrets](https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions) so that you don't expose the values for `clientId`, `clientSecret`, and `database`.
@@ -39,12 +40,12 @@ Be sure to use [secrets](https://docs.github.com/en/actions/security-guides/usin
 ## Command Line
 
 1. Install this package globally `npm i -g @bugsplat/symbol-upload`
-2. Run symbol-upload with `-h` to see the latest usage information:
+2. Run symbol-upload with `-h` to see the latest usage information and package version:
 
 ```bash
 bobby@BugSplat % ~ % symbol-upload -h
 
-@bugsplat/symbol-upload
+@bugsplat/symbol-upload v7.2.2
 
   symbol-upload contains a command line utility and a set of libraries to help  
   you upload symbol files to BugSplat.                                          
@@ -79,7 +80,8 @@ Usage
                                          option is provided no other actions are taken.                                
   -f, --files string (optional)          Glob pattern that specifies a set of files to upload. Defaults to '*.js.map'  
   -d, --directory string (optional)      Path of the base directory used to search for symbol files. This value will   
-                                         be combined with the --files glob. Defaults to '.'                            
+                                         be combined with the --files glob. Defaults to '.'
+  -m, --dumpSyms boolean (optional)      Use dump_syms to generate and upload sym files for specified binaries.                              
 
   The -u and -p arguments are not required if you set the environment variables 
   SYMBOL_UPLOAD_USER and SYMBOL_UPLOAD_PASSWORD, or provide a clientId and      
@@ -103,7 +105,7 @@ Links
                                                    
   💌 support@bugsplat.com   
 ```
-3. Run symbol-upload specifying a [glob](https://www.npmjs.com/package/glob#glob-primer) pattern for `-f` and a path with forward slashes for `-d`
+3. Run symbol-upload specifying a [glob](https://www.npmjs.com/package/glob#glob-primer) pattern for `-f` and a path with forward slashes for `-d`. Multiple file types can be specified in curly brackets separated by a comma, and wildcards can be used to search directories recursively. For example, `**/*.{pdb,exe,dll}` will search for all `.pdb`, `.exe`, and `.dll` files in the current directory and all subdirectories. Optionally, you can specify the `-m` flag to run [dump_syms](https://github.com/BugSplat-Git/node-dump-syms) against the specified binaries and upload the resulting `.sym` files.
 
 ## API
 
@@ -111,7 +113,7 @@ Links
 2. Import `BugSplatApiClient` and `VersionsApiClient` from @bugsplat/symbol-upload. Alternatively, you can import `OAuthClientCredentialsClient` if you'd prefer to authenticate with an [OAuth2 Client Credentials](https://docs.bugsplat.com/introduction/development/web-services/oauth2#client-credentials) Client ID and Client Secret.
 
 ```ts
-import { BugSplatApiClient, OAuthClientCredentialsClient, VersionsApiClient } from '@bugsplat/symbol-upload';
+import { BugSplatApiClient, OAuthClientCredentialsClient, uploadSymbolFiles } from '@bugsplat/symbol-upload';
 ```
 
 3. Create a new instance of `BugSplatApiClient` using the `createAuthenticatedClientForNode` async factory function or `OAuthClientCredentialsClient` using the `createAuthenticatedClient` async factory function.
@@ -124,41 +126,16 @@ const bugsplat = await BugSplatApiClient.createAuthenticatedClientForNode(email,
 const bugsplat = await OAuthClientCredentialsClient.createAuthenticatedClient(clientId, clientSecret);
 ```
 
-4. Create an `UploadableFile` object for each symbol file path.
+4. Upload your symbol files to bugsplat by calling the `uploadSymbolFiles` function.
 
 ```ts
-const files = paths.map(path => {
-  const stat = fs.statSync(path);
-  const size = stat.size;
-  const name = basename(path);
-  const file = fs.createReadStream(path);
-  return {
-          name,
-          size,
-          file
-  };
-});
+const directory = '/path/to/symbols/dir';
+const files = ['my-cool-app.exe', 'my-cool-app.pdb'];
+await uploadSymbolFiles(bugsplat, database, application, version, directory, files);
 ```
 
-5. Create an instance of `VersionsApiClient` passing it an instance of `BugSplatApiClient`.
+If you've done everything correctly, your symbols should be shown by clicking the application link on the [Versions](https://app.bugsplat.com/v2/versions) page.
 
-```ts
-const versionsApiClient = new VersionsApiClient(bugsplat);
-```
-
-6. Await the call to `postSymbols` passing it the name of your BugSplat `database`, `application`, `version` and an array of `files`. These values need to match the values you used to initialize BugSplat on whichever [platform](https://docs.bugsplat.com/introduction/getting-started/integrations) you've integrated with.
-
-```ts
-await versionsApiClient.postSymbols(
-  database,
-  application,
-  version,
-  files
-);
-```
-
-If you've done everything correctly your symbols should now be shown on the [Versions](https://app.bugsplat.com/v2/versions) page.
-
-![Versions](https://bugsplat-public.s3.amazonaws.com/npm/symbol-upload/versions.png)
+<img width="1728" alt="image" src="https://github.com/BugSplat-Git/symbol-upload/assets/2646053/7314bd36-05db-4188-89e4-10f4e7442cec">
 
 Thanks for using BugSplat!

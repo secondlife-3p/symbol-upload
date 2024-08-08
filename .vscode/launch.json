@@ -18,12 +18,63 @@
             "type": "node"
         },
         {
-            "name": "Start: Pdb",
+            "name": "Start: pdb",
             "request": "launch",
             "runtimeArgs": [
                 "run-script",
                 "start:pdb",
-                "--trace-warnings"
+            ],
+            "runtimeExecutable": "npm",
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+            "type": "node"
+        },
+        {
+            "name": "Start: sym",
+            "request": "launch",
+            "runtimeArgs": [
+                "run-script",
+                "start:sym",
+            ],
+            "runtimeExecutable": "npm",
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+            "type": "node"
+        },
+        {
+            "name": "Start: dsym",
+            "request": "launch",
+            "runtimeArgs": [
+                "run-script",
+                "start:dsym",
+            ],
+            "runtimeExecutable": "npm",
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+            "type": "node"
+        },
+        {
+            "name": "Start: elf",
+            "request": "launch",
+            "runtimeArgs": [
+                "run-script",
+                "start:elf",
+            ],
+            "runtimeExecutable": "npm",
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+            "type": "node"
+        },
+        {
+            "name": "Start: dump_syms",
+            "request": "launch",
+            "runtimeArgs": [
+                "run-script",
+                "start:dump_syms",
             ],
             "runtimeExecutable": "npm",
             "skipFiles": [

@@ -1,10 +1,12 @@
 import { OptionDefinition as ArgDefinition } from "command-line-args";
-import { OptionDefinition as UsageDefinition, Section } from "command-line-usage";
+import { Section, OptionDefinition as UsageDefinition } from "command-line-usage";
+import { existsSync, readFileSync } from "fs";
+import { join } from "node:path";
+import { getAsset, isSea } from "node:sea";
+
+const packageVersion = getPackageVersion();
 
 export type CommandLineDefinition = ArgDefinition & UsageDefinition;
-
-const defaultParallelThreads = 8;
-export const maxParallelThreads = 16;
 
 export const argDefinitions: Array<CommandLineDefinition> = [
     {
@@ -25,14 +27,14 @@ export const argDefinitions: Array<CommandLineDefinition> = [
         alias: 'a',
         type: String,
         typeLabel: '{underline string}',
-        description: 'The name of your application. The value of application must match the value used to post crash reports. If not provided symbol-upload will attempt to use the value of the name field in package.json if it exists in the current working directory.',
+        description: 'The name of your application. If not provided symbol-upload will attempt to use the value of the name field in package.json if it exists in the current working directory.',
     },
     {
         name: 'version',
         alias: 'v',
         type: String,
         typeLabel: '{underline string}',
-        description: 'Your application\'s version. The value of version must match the value used to post crash reports. If not provided symbol-upload will attempt to use the value of the version field in package.json if it exists in the current working directory.',
+        description: 'Your application\'s version. If not provided symbol-upload will attempt to use the value of the version field in package.json if it exists in the current working directory.',
     },
     {
         name: 'user',
@@ -74,7 +76,7 @@ export const argDefinitions: Array<CommandLineDefinition> = [
         type: String,
         defaultValue: '*.js.map',
         typeLabel: '{underline string} (optional)',
-        description: 'Glob pattern that specifies a set of files to upload. Defaults to \'*.js.map\'',
+        description: 'Glob pattern that specifies a set of files to upload. For example, **/*.\\{pdb,exe,dll\\} will recursively search for .pdb, .exe, and .dll files. Defaults to \'*.js.map\'',
     },
     {
         name: 'directory',
@@ -85,18 +87,18 @@ export const argDefinitions: Array<CommandLineDefinition> = [
         description: 'Path of the base directory used to search for symbol files. This value will be combined with the --files glob. Defaults to \'.\'',
     },
     {
-        name: 'threads', 
-        alias: 't',
-        type: Number,
-        defaultValue: defaultParallelThreads,
-        typeLabel: '{underline number} (optional)',
-        description: `The maximum number of parallel uploads. Defaults to ${defaultParallelThreads} and max is ${maxParallelThreads}.`,
+        name: 'dumpSyms',
+        alias: 'm',
+        type: Boolean,
+        defaultValue: false,
+        description: 'Use dump_syms to generate and upload sym files for specified binaries.',
+        typeLabel: '{underline boolean} (optional)',
     }
 ];
 
 export const usageDefinitions: Array<Section> = [
     {
-        header: '@bugsplat/symbol-upload',
+        header: `@bugsplat/symbol-upload v${packageVersion}`,
         content: 'symbol-upload contains a command line utility and a set of libraries to help you upload symbol files to BugSplat.',
     },
     {
@@ -118,13 +120,37 @@ export const usageDefinitions: Array<Section> = [
     },
     {
         header: 'Links',
-        content: 
-        [
-            '🐛 {underline https://bugsplat.com}',
-            '',
-            '💻 {underline https://github.com/BugSplat-Git/symbol-upload}',
-            '',
-            '💌 {underline support@bugsplat.com}'
-        ]
+        content:
+            [
+                '🐛 {underline https://bugsplat.com}',
+                '',
+                '💻 {underline https://github.com/BugSplat-Git/symbol-upload}',
+                '',
+                '💌 {underline support@bugsplat.com}'
+            ]
     }
 ];
+
+function getPackageVersion(): string {
+    if (isSea()) {
+        return JSON.parse(`${getAsset('package.json', 'utf-8')}`).version;
+    }
+
+    const path = [
+        join(__dirname, 'package.json'),
+        join(__dirname, '../package.json'),
+        join(__dirname, '../../package.json'),
+    ].find((path) => existsSync(path));
+
+    if (!path) {
+        throw new Error('Could not find package.json');
+    }
+
+    const packageJson = readFileSync(path, 'utf-8').toString();
+
+    try {
+        return JSON.parse(packageJson).version;
+    } catch {
+        throw new Error('Could not parse package.json');
+    }
+}

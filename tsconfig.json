@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
     "target": "es2020",
+    "lib": ["es2022"],
     "module": "commonjs",
     "declaration": true,
     "sourceMap": true,
@@ -10,9 +11,7 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
+    "allowJs": true
   },
-  "files": [
-    "./index.ts",
-    "./bin/index.ts"
-  ]
+  "files": ["./index.ts", "./bin/index.ts", "src/compression.js"]
 }
